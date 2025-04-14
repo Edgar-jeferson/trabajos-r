@@ -1,0 +1,180 @@
+library(shiny)
+library(ggplot2)
+library(writexl)
+library(report)
+
+ui <- fluidPage(
+  titlePanel("Comparación: ANOVA vs. Prueba t"),
+  sidebarLayout(
+    sidebarPanel(
+      h4("✏️ Ingresar datos"),
+      
+      tabsetPanel(
+        tabPanel("Jugos",
+                 textAreaInput("manzana", "Valores Manzana", "6,7,5,6,7,5,6,7,6,5"),
+                 textAreaInput("naranja", "Valores Naranja", "8,9,6,7,8,6,7,9,8,7"),
+                 textAreaInput("uvas", "Valores Uvas", "5,6,4,5,6,4,5,6,5,4")
+        ),
+        tabPanel("Batidos",
+                 textAreaInput("batidoA", "Valores Batido A", "12,14,13,15,14,13,12,16,14,15"),
+                 textAreaInput("batidoB", "Valores Batido B", "10,11,9,10,12,10,11,9,10,11")
+        )
+      ),
+      
+      actionButton("actualizar", "Actualizar Resultados", class = "btn btn-primary"),
+      hr(),
+      downloadButton("descargar_datos", "Descargar Datos (.xlsx)"),
+      downloadButton("descargar_resultados", "Descargar Resultados (.xlsx)")
+    ),
+    
+    mainPanel(
+      tabsetPanel(
+        tabPanel("ANOVA + Tukey (Jugos)",
+                 h3("Análisis de Varianza (ANOVA)"),
+                 verbatimTextOutput("anova"),
+                 h3("Prueba de Tukey HSD"),
+                 verbatimTextOutput("tukey"),
+                 plotOutput("plot_tukey")
+        ),
+        tabPanel("Prueba t (Batidos)",
+                 h3("Prueba t de Student"),
+                 verbatimTextOutput("ttest"),
+                 plotOutput("plot_ttest")
+        ),
+        tabPanel("Interacción (Iris)",
+                 h3("Modelo ANOVA con interacción: Species * Cat1"),
+                 verbatimTextOutput("anova_interaccion"),
+                 h3("Interpretación con paquete report"),
+                 verbatimTextOutput("report_interpretacion")
+        )
+      )
+    )
+  )
+)
+
+server <- function(input, output) {
+  
+  texto_a_numeros <- function(texto) {
+    as.numeric(unlist(strsplit(texto, ",")))
+  }
+  
+  datos <- eventReactive(input$actualizar, {
+    manzana <- texto_a_numeros(input$manzana)
+    naranja <- texto_a_numeros(input$naranja)
+    uvas <- texto_a_numeros(input$uvas)
+    batido_A <- texto_a_numeros(input$batidoA)
+    batido_B <- texto_a_numeros(input$batidoB)
+    
+    calificaciones <- c(manzana, naranja, uvas)
+    jugos <- factor(rep(c("Manzana", "Naranja", "Uvas"), each = length(manzana)),
+                    levels = c("Uvas", "Manzana", "Naranja"))
+    datos_jugos <- data.frame(Energia = calificaciones, Jugo = jugos)
+    
+    modelo <- aov(Energia ~ Jugo, data = datos_jugos)
+    tukey <- TukeyHSD(modelo)
+    prueba_t <- t.test(batido_A, batido_B, var.equal = TRUE)
+    
+    # Modelo con interacción usando iris
+    data_iris <- iris
+    data_iris$Cat1 <- rep(c("A", "B"), length.out = nrow(data_iris))
+    modelo_inter <- aov(Sepal.Length ~ Species * Cat1, data = data_iris)
+    interpretacion <- report(modelo_inter)
+    
+    list(
+      manzana = manzana,
+      naranja = naranja,
+      uvas = uvas,
+      batido_A = batido_A,
+      batido_B = batido_B,
+      datos_jugos = datos_jugos,
+      modelo = modelo,
+      tukey = tukey,
+      prueba_t = prueba_t,
+      modelo_inter = modelo_inter,
+      interpretacion = interpretacion
+    )
+  })
+  
+  output$anova <- renderPrint({
+    summary(datos()$modelo)
+  })
+  
+  output$tukey <- renderPrint({
+    datos()$tukey
+  })
+  
+  output$plot_tukey <- renderPlot({
+    tukey <- datos()$tukey
+    df_tukey <- as.data.frame(tukey$Jugo)
+    df_tukey$comparacion <- rownames(df_tukey)
+    
+    ggplot(df_tukey, aes(x = comparacion, y = diff)) +
+      geom_bar(stat = "identity", fill = "skyblue") +
+      geom_errorbar(aes(ymin = lwr, ymax = upr), width = 0.2) +
+      labs(title = "Diferencias de medias entre jugos (Tukey)",
+           x = "Comparación", y = "Diferencia de medias") +
+      theme_minimal()
+  })
+  
+  output$ttest <- renderPrint({
+    datos()$prueba_t
+  })
+  
+  output$plot_ttest <- renderPlot({
+    df_batidos <- data.frame(
+      Valor = c(datos()$batido_A, datos()$batido_B),
+      Grupo = rep(c("Batido A", "Batido B"), each = length(datos()$batido_A))
+    )
+    
+    ggplot(df_batidos, aes(x = Grupo, y = Valor, fill = Grupo)) +
+      geom_boxplot() +
+      labs(title = "Comparación de batidos", y = "Nivel de energía") +
+      theme_minimal()
+  })
+  
+  output$anova_interaccion <- renderPrint({
+    summary(datos()$modelo_inter)
+  })
+  
+  output$report_interpretacion <- renderPrint({
+    print(datos()$interpretacion)
+  })
+  
+  output$descargar_datos <- downloadHandler(
+    filename = function() { "datos_jugos_batidos.xlsx" },
+    content = function(file) {
+      datos_reactivos <- datos()
+      datos_listos <- list(
+        Manzana = data.frame(valor = datos_reactivos$manzana),
+        Naranja = data.frame(valor = datos_reactivos$naranja),
+        Uvas = data.frame(valor = datos_reactivos$uvas),
+        Batido_A = data.frame(valor = datos_reactivos$batido_A),
+        Batido_B = data.frame(valor = datos_reactivos$batido_B)
+      )
+      write_xlsx(datos_listos, path = file)
+    }
+  )
+  
+  output$descargar_resultados <- downloadHandler(
+    filename = function() { "resultados_estadisticos.xlsx" },
+    content = function(file) {
+      datos_reactivos <- datos()
+      anova_summary <- capture.output(summary(datos_reactivos$modelo))
+      tukey_summary <- as.data.frame(datos_reactivos$tukey$Jugo)
+      ttest_summary <- capture.output(datos_reactivos$prueba_t)
+      inter_summary <- capture.output(summary(datos_reactivos$modelo_inter))
+      report_text <- capture.output(datos_reactivos$interpretacion)
+      
+      resultados <- list(
+        ANOVA = data.frame(Resultado = anova_summary),
+        TukeyHSD = tukey_summary,
+        Prueba_t = data.frame(Resultado = ttest_summary),
+        ANOVA_Interaccion = data.frame(Resultado = inter_summary),
+        Interpretacion = data.frame(Interpretacion = report_text)
+      )
+      write_xlsx(resultados, path = file)
+    }
+  )
+}
+
+shinyApp(ui = ui, server = server)
